@@ -629,6 +629,10 @@
                    (setq lo (1+ lo)))
                  (when (%ilogbitp 25 hi) ; got bigger
                    (setq int-len (1+ int-len))
+                   (when (and (>= int-len (- 2047 double-float-decode-bias))
+                              (get-fpu-mode :overflow))
+                     (error (make-condition 'floating-point-overflow
+                                            :operation 'float :operands (list big))))
                    (let ((bit (%ilogbitp 0 hi)))
                      (setq hi (%ilsr 1 hi))
                      (setq lo (%ilsr 1 lo))
@@ -660,6 +664,10 @@
                  (setq lo (1+ lo))
                  (when (%ilogbitp 24 lo) ; got bigger
                    (setq int-len (1+ int-len))
+                   (when (and (>= int-len (- 255 single-float-decode-bias))
+                              (get-fpu-mode :overflow))
+                     (error (make-condition 'floating-point-overflow
+                                            :operation 'float :operands (list big 1.0s0))))
                    (setq lo (%ilsr 1 lo))))
                (make-short-float-from-fixnums  lo (+ single-float-decode-bias int-len)(if minusp -1 1) result))
              ))))
@@ -685,6 +693,10 @@
                  (setq lo (1+ lo))
                  (when (%ilogbitp 24 lo) ; got bigger
                    (setq int-len (1+ int-len))
+                   (when (and (>= int-len (- 255 single-float-decode-bias))
+                              (get-fpu-mode :overflow))
+                     (error (make-condition 'floating-point-overflow
+                                            :operation 'float :operands (list big 1.0s0))))
                    (setq lo (%ilsr 1 lo))))
                (make-short-float-from-fixnums  lo (+ single-float-decode-bias int-len)(if minusp -1 1)))
              ))))
