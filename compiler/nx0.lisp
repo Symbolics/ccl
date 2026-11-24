@@ -1963,6 +1963,8 @@ Or something. Right? ~s ~s" var varbits))
 
 ;;; Reference-count vcell, fcell refs.
 (defun nx1-note-vcell-ref (sym)
+  (when (logbitp $sym_vbit_indirect (the fixnum (%symbol-bits sym)))
+    (setq sym (%special-alias-target sym)))
   (let* ((there (assq sym *nx1-vcells*))
          (count (expt 4 *nx-loop-nesting-level*)))
     (if there

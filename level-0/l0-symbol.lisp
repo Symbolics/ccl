@@ -146,9 +146,23 @@
   (and (symbolp sym)
        (%ilogbitp $sym_vbit_const (%symbol-bits sym))))
 
+;;; A symbol that has been made an alias of another special variable
+;;; (see %ALIAS-SPECIAL) has $sym_vbit_indirect set in its flags.  Its
+;;; own global value cell is unused; the functions below, and the
+;;; compiler (see NX1-NOTE-VCELL-REF), operate on the target instead.
+(defmacro %resolve-special-alias (sym)
+  (let* ((s (gensym)))
+    `(let* ((,s ,sym))
+       (if (logbitp $sym_vbit_indirect
+                    (the fixnum (%svref (symptr->symvector (%symbol->symptr ,s))
+                                        target::symbol.flags-cell)))
+         (%special-alias-target ,s)
+         ,s))))
+
 ;;; This leaves the SPECIAL bit alone, clears the others.
 (defun makunbound (sym)
   "Make SYMBOL unbound, removing any value it may currently have."
+  (setq sym (%resolve-special-alias sym))
   (if (and *warn-if-redefine-kernel*
            (constant-symbol-p sym))
     (cerror "Make ~S be unbound anyway."
@@ -191,16 +205,19 @@
     bits))
 
 (defun %sym-value (name)
-  (%symptr-value (%symbol->symptr name)))
+  (%symptr-value (%symbol->symptr (%resolve-special-alias name))))
 
 (defun %set-sym-value (name val)
-  (%set-symptr-value (%symbol->symptr name) val))
+  (%set-symptr-value (%symbol->symptr (%resolve-special-alias name)) val))
     
 (defun %sym-global-value (name)
-  (%svref (symptr->symvector (%symbol->symptr name)) target::symbol.vcell-cell))
+  (%svref (symptr->symvector (%symbol->symptr (%resolve-special-alias name)))
+          target::symbol.vcell-cell))
 
 (defun %set-sym-global-value (name val)
-  (setf (%svref (symptr->symvector (%symbol->symptr name)) target::symbol.vcell-cell) val))
+  (setf (%svref (symptr->symvector (%symbol->symptr (%resolve-special-alias name)))
+                target::symbol.vcell-cell)
+        val))
 
 (defun symbol-name (sym)
   "Return SYMBOL's name as a string."
@@ -224,7 +241,7 @@
         (if (functionp fun) fun)))))
 
 (defun %symbol-binding-address (sym)
-  (%symptr-binding-address (%symbol->symptr sym)))
+  (%symptr-binding-address (%symbol->symptr (%resolve-special-alias sym))))
 
 (defun symbol-binding-index (sym)
   (%svref (symptr->symvector (%symbol->symptr sym)) target::symbol.binding-index-cell))
@@ -235,12 +252,37 @@
 ;;; and symbols
 (let* ((binding-index-lock (make-lock))
        (binding-index-reverse-map (make-hash-table :test #'eq :weak :value))
+       (special-aliases (make-hash-table :test #'eq :weak :key))
        (next-binding-index 0))
+  (defun %special-alias-target (alias)
+    (gethash alias special-aliases))
+  ;; Called by %ALIAS-SPECIAL, once it has validated its arguments.
+  (defun %install-special-alias (alias root)
+    (with-lock-grabbed (binding-index-lock)
+      (without-interrupts
+       (let* ((aliasvec (symptr->symvector (%symbol->symptr alias)))
+              (rootvec (symptr->symvector (%symbol->symptr root)))
+              (old-index (%svref aliasvec target::symbol.binding-index-cell))
+              (index (%svref rootvec target::symbol.binding-index-cell)))
+         (declare (fixnum old-index index))
+         ;; The target's global value wins; ALIAS's is used only
+         ;; if the target is unbound.
+         (when (eq (%svref rootvec target::symbol.vcell-cell) (%unbound-marker))
+           (setf (%svref rootvec target::symbol.vcell-cell)
+                 (%svref aliasvec target::symbol.vcell-cell)))
+         (setf (%svref aliasvec target::symbol.vcell-cell) (%unbound-marker))
+         (unless (zerop old-index)
+           (remhash old-index binding-index-reverse-map))
+         (setf (%svref aliasvec target::symbol.binding-index-cell) index)
+         (setf (gethash alias special-aliases) root)
+         ;; Flag last: readers test it before consulting the table.
+         (%symbol-bits alias (bitset $sym_vbit_indirect (the fixnum (%symbol-bits alias))))))))
   (defun %set-binding-index (val) (setq next-binding-index val))
   (defun next-binding-index () (1+ next-binding-index))
   (defun ensure-binding-index (sym)
     (with-lock-grabbed (binding-index-lock)
-      (let* ((symvec (symptr->symvector (%symbol->symptr sym)))
+      (let* ((sym (or (gethash sym special-aliases) sym))
+             (symvec (symptr->symvector (%symbol->symptr sym)))
              (idx (%svref symvec target::symbol.binding-index-cell))
              (bits (%symbol-bits sym)))
         (declare (fixnum idx bits))

@@ -569,6 +569,50 @@
                (%sym-global-value sym))))
       (%resume-tcr tcr))))
 
+(defun %special-thread-bound-p (sym)
+  "True if any thread has a thread-local binding of SYM."
+  (with-lock-grabbed (*kernel-tcr-area-lock*)
+    (dolist (p (all-processes) nil)
+      (let* ((tcr (process-tcr p)))
+        (when tcr
+          (if (eq tcr (%current-tcr))
+            (when (%tcr-binding-location tcr sym)
+              (return t))
+            (unwind-protect
+                 (progn
+                   (%suspend-tcr tcr)
+                   (when (%tcr-binding-location tcr sym)
+                     (return t)))
+              (%resume-tcr tcr))))))))
+
+(defun %alias-special (alias target)
+  "Make ALIAS another name for the special variable TARGET: both symbols
+then share the same global value and the same thread-local bindings, whichever
+of them is used to read, set or bind the variable.  Code compiled before
+the call keeps referring to ALIAS's own (now unused) global value cell."
+  (setq alias (require-type alias 'symbol))
+  (setq target (require-type target 'symbol))
+  (let* ((root (or (%special-alias-target target) target)))
+    (when (eq root alias)
+      (error "Can't make ~s an alias of itself." alias))
+    (dolist (s (list alias root))
+      (when (or (null s) (eq s t) (keywordp s)
+                (logbitp $sym_vbit_const (the fixnum (%symbol-bits s)))
+                (logbitp $sym_vbit_global (the fixnum (%symbol-bits s))))
+        (error "~s can't take part in a special variable alias." s)))
+    (let* ((old (%special-alias-target alias)))
+      (when old
+        (if (eq old root)
+          (return-from %alias-special alias)
+          (error "~s is already an alias of ~s." alias old))))
+    (%proclaim-special alias)
+    (%proclaim-special root)
+    (ensure-binding-index root)
+    (when (%special-thread-bound-p alias)
+      (error "~s has thread-local bindings; can't make it an alias." alias))
+    (%install-special-alias alias root)
+    alias))
+
 (defun (setf symbol-value-in-tcr) (value sym tcr)
   (if (eq tcr (%current-tcr))
     (%set-sym-value sym value)

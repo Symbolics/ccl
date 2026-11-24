@@ -3765,6 +3765,8 @@
 
 (defun x862-symbol-value-cell (sym)
   (setq sym (require-type sym 'symbol))
+  (when (logbitp $sym_vbit_indirect (the fixnum (%symbol-bits sym)))
+    (setq sym (%special-alias-target sym)))
   (or (assq sym *x862-vcells*)
       (let ((new (list sym)))
         (push new *x862-vcells*)
